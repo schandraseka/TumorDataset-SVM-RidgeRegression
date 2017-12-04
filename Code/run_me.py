@@ -1,0 +1,276 @@
+import numpy as np
+import kaggle
+from sklearn.metrics import accuracy_score
+from sklearn.grid_search import GridSearchCV
+from sklearn.model_selection import cross_val_score, KFold
+from operator import itemgetter
+from sklearn.metrics.scorer import make_scorer
+from itertools import product
+from sklearn.svm import SVC
+from sklearn.kernel_ridge import KernelRidge
+import math
+from sklearn.linear_model.ridge import Ridge
+import matplotlib.pyplot as plt
+
+def euclidean_dist_matrix(data_1, data_2):
+    norms_1 = (data_1 ** 2).sum()
+    norms_2 = (data_2 ** 2).sum()
+    return np.abs(norms_1.reshape(-1, 1) + norms_2 - 2 * np.dot(data_1, data_2.T))
+
+def Cauchy(X,Y):
+    dists_sq = euclidean_dist_matrix(X, Y)
+    return 1 / (1 + dists_sq )
+
+
+# Read in train and test synthetic data
+def read_synthetic_data():
+	print('Reading synthetic data ...')
+	train_x = np.loadtxt('../../Data/Synthetic/data_train.txt', delimiter = ',', dtype=float)
+	train_y = np.loadtxt('../../Data/Synthetic/label_train.txt', delimiter = ',', dtype=float)
+	test_x = np.loadtxt('../../Data/Synthetic/data_test.txt', delimiter = ',', dtype=float)
+	test_y = np.loadtxt('../../Data/Synthetic/label_test.txt', delimiter = ',', dtype=float)
+
+	return (train_x, train_y, test_x, test_y)
+
+# Read in train and test credit card data
+def read_creditcard_data():
+	print('Reading credit card data ...')
+	train_x = np.loadtxt('../../Data/CreditCard/data_train.txt', delimiter = ',', dtype=float)
+	train_y = np.loadtxt('../../Data/CreditCard/label_train.txt', delimiter = ',', dtype=float)
+	test_x = np.loadtxt('../../Data/CreditCard/data_test.txt', delimiter = ',', dtype=float)
+
+	return (train_x, train_y, test_x)
+
+# Read in train and test tumor data
+def read_tumor_data():
+	print('Reading tumor data ...')
+	train_x = np.loadtxt('../../Data/Tumor/data_train.txt', delimiter = ',', dtype=float)
+	train_y = np.loadtxt('../../Data/Tumor/label_train.txt', delimiter = ',', dtype=float)
+	test_x = np.loadtxt('../../Data/Tumor/data_test.txt', delimiter = ',', dtype=float)
+
+	return (train_x, train_y, test_x)
+
+def parse_param_grid(param_grid):
+    for p in param_grid:
+            items = sorted(p.items())
+            keys, values = zip(*items)
+            for v in product(*values):
+                params = dict(zip(keys, v))
+                yield params
+
+
+def gridsearch(X, y, model, paramgridIterator, scorer, cv=5):
+    result = []
+    maxacc = -1000000
+    bestparam = {}
+    accuracies = []
+    for param in paramgridIterator:
+        model = model.set_params(**param)
+        accuracies = cross_val_score(model,X,y,scoring=scorer,cv=5)
+        acc = np.mean(accuracies)
+        if acc>maxacc:
+            maxacc = acc
+            bestparam = param
+        print(str(param)+"Scores="+str(acc))
+        print('Error', 1-acc)
+    return bestparam,maxacc
+
+
+# Compute MSE
+def compute_MSE(y, y_hat):
+	# mean squared error
+	return np.mean(np.power(y - y_hat, 2))
+
+train_x, train_y, test_x = read_creditcard_data()
+print('Train=', train_x.shape)
+print('Test=', test_x.shape)
+
+
+#1.e
+param_grid = {'alpha' : [1, 0.0001], 
+'gamma' : [None, 1, 0.001], 'kernel' :['linear', 'poly', 'rbf'], 'degree' : [3]}
+paramgridIterator = parse_param_grid([param_grid])
+model = KernelRidge()
+bestparam = gridsearch(train_x, train_y, model, paramgridIterator,make_scorer(compute_MSE, greater_is_better=False))[0]
+print('Best parameters',bestparam)
+bestmodel = KernelRidge(alpha = bestparam['alpha'], gamma = bestparam['gamma'], kernel = bestparam['kernel'], degree = bestparam['degree'])
+bestmodel.fit(train_x,train_y)
+test_y = bestmodel.predict(test_x)
+file_name = '../Predictions/KernelCredit.csv'
+# Writing output in Kaggle format    
+print('Writing output to ', file_name)
+kaggle.kaggleize(test_y, file_name, True)
+
+
+#2.a
+train_x, train_y, test_x = read_tumor_data()
+print('Train=', train_x.shape)
+print('Test=', test_x.shape)
+param_grid = {'C' : [1, 0.01, 0.0001], 
+'gamma' : [ 1, 0.01, 0.001], 'kernel' :['linear', 'poly', 'rbf'], 'degree' : [3,5]}
+paramgridIterator = parse_param_grid([param_grid])
+model = SVC()
+bestparam = gridsearch(train_x, train_y, model, paramgridIterator, "accuracy")[0]
+print('Best parameters',bestparam)
+bestmodel = SVC(C = bestparam['C'], gamma = bestparam['gamma'], kernel = bestparam['kernel'], degree = bestparam['degree'])
+bestmodel.fit(train_x,train_y)
+test_y = bestmodel.predict(test_x)
+file_name = '../Predictions/KernelTumor.csv'
+# Writing output in Kaggle format    
+print('Writing output to ', file_name)
+kaggle.kaggleize(test_y, file_name, False)
+
+
+#1.d
+train_x, train_y, test_x, test_y = read_synthetic_data()
+print('Train=', train_x.shape)
+print('Test=', test_x.shape)
+
+
+#Apply polynomial basis expansion
+def my_kernel(X,Y,p):
+    K = np.zeros((X.shape[0],Y.shape[0]))
+    for i,x in enumerate(X):
+        for j,y in enumerate(Y):
+            K[i,j] = (1+x*y)**p
+    return K
+    
+krrs_polypredictions = []
+for deg in [1,2,4,6]:
+    #print(my_kernel(train_x.T,train_x,i))
+    alpha = np.linalg.inv(my_kernel(train_x.T,train_x,deg) + (0.1*np.eye(train_x.shape[0]))).dot(train_y.reshape(-1,1))
+    #print(alpha)
+    pred_y = np.zeros((test_x.shape[0],1))
+    for i in range(test_x.shape[0]):
+        psum = 0
+        for j in  range(train_x.shape[0]):
+            psum += alpha[j]*(1 + np.dot(test_x[i].T, train_x[j]))**deg
+        pred_y[i][0] = psum
+    krrs_polypredictions.append(pred_y)
+    
+#print(krrs_polypredictions)
+
+for lst in krrs_polypredictions:
+    print(compute_MSE(np.array(lst).reshape(200,1), test_y.reshape(200,1)))
+
+krrs_trigpredictions = []
+for deg in [3,6,10]:
+    alpha = np.linalg.inv(trig_kernel(train_x.T,train_x,deg) + (0.1*np.eye(train_x.shape[0]))).dot(train_y)
+    pred_y = np.zeros((test_x.shape[0],1))
+    #print(alpha)
+    for i in range(test_x.shape[0]):
+        psum = 0
+        for j in  range(train_x.shape[0]):
+            tsum = 0
+            d = 0.5
+            for de in range(deg):
+                tsum += np.dot(np.sin(de*d*test_x[i]),np.sin(de*d*train_x[j])) + np.dot(np.cos(de*d*test_x[i]),np.cos(de*d*train_x[j]))
+            psum += alpha[j]*(1 + tsum)
+        pred_y[i][0] = psum
+    krrs_trigpredictions.append(pred_y)
+
+#print(krrs_trigpredictions)
+
+for lst in krrs_trigpredictions:
+    print(compute_MSE(np.array(lst).reshape(200,1), test_y.reshape(200,1)))
+
+
+berr_polypredictions = []
+for deg in [1,2,4,6]:
+    train_x_new = []
+    for i in range(train_x.shape[0]):
+        train_x_new.append([train_x[i]**j for j in range(deg+1)])
+    test_x_new = []
+    for i in range(test_x.shape[0]):
+        test_x_new.append([test_x[i]**j for j in range(deg+1)])
+    clf = Ridge()
+    clf.fit(train_x_new, train_y)
+    pred_y = clf.predict(test_x_new)
+    #print(pred_y)
+    berr_polypredictions.append(pred_y)
+
+#print(berr_polypredictions)
+for lst in berr_polypredictions:
+    print(compute_MSE(np.array(lst).reshape(200,1), test_y.reshape(200,1)))
+
+def trig_expansion(train_x, degree):
+    res = [1]
+    d = 0.5
+    for de in range(degree):
+        res.append(np.sin(de*d*train_x))
+        res.append(np.cos(de*d*train_x))
+    return res
+
+berr_trigpredictions = []
+for degree in [3, 5, 10]:
+    train_x_new = []
+    for i in range(train_x.shape[0]):
+        train_x_new.append(trig_expansion(train_x[i],degree))
+    test_x_new = []
+    for i in range(test_x.shape[0]):
+        test_x_new.append(trig_expansion(test_x[i],degree))
+
+    clf = Ridge()
+    clf.fit(train_x_new, train_y)
+    pred_y = clf.predict(test_x_new)
+    berr_trigpredictions.append(pred_y)
+
+#print(berr_trigpredictions)  
+for lst in berr_trigpredictions:
+    print(compute_MSE(np.array(lst).reshape(200,1), test_y.reshape(200,1)))
+
+
+plt.rc('font',size=7)
+f, array = plt.subplots(4, 2, figsize=(10,8))
+array[0,0].scatter(test_x, test_y, c='b', marker = '*', s=8)
+array[0,0].scatter(test_x, krrs_polypredictions[1], c='r', marker = 'o', s=7)
+array[0,0].set_xlabel("Test X")
+array[0,0].set_ylabel("True/Predicted Y")
+array[0,0].set_title("KRRS, Polynomial, lambda = 0.1, degree = 2")
+
+array[0,1].scatter(test_x, test_y, c='b', marker = '*', s=7)
+array[0,1].scatter(test_x, berr_polypredictions[1], c='r', marker = 'o', s=7)
+array[0,1].set_xlabel("Test X")
+array[0,1].set_ylabel("True/Predicted Y") 
+array[0,1].set_title("BERR, Polynomial, lambda = 0.1, degree = 2")
+
+array[1,0].scatter(test_x, test_y, c='b', marker = '*', s=7)
+array[1,0].scatter(test_x, krrs_polypredictions[3], c='r', marker = 'o', s=7)
+array[1,0].set_xlabel("Test X")
+array[1,0].set_ylabel("True/Predicted Y")
+array[1,0].set_title("KRRS, Polynomial, lambda = 0.1, degree = 6")
+
+array[1,1].scatter(test_x, test_y, c='b', marker = '*', s=7)
+array[1,1].scatter(test_x, berr_polypredictions[3], c='r', marker = 'o', s=7)
+array[1,1].set_xlabel("Test X")
+array[1,1].set_ylabel("True/Predicted Y")
+array[1,1].set_title("BERR, Polynomial, lambda = 0.1, degree = 6")
+
+array[2,0].scatter(test_x, test_y, c='b', marker = '*', s=7)
+array[2,0].scatter(test_x, krrs_trigpredictions[1], c='r', marker = 'o', s=7)
+array[2,0].set_xlabel("Test X")
+array[2,0].set_ylabel("True/Predicted Y")
+array[2,0].set_title("KRRS, Trignometric, lambda = 0.1, degree = 5")
+
+array[2,1].scatter(test_x, test_y, c='b', marker = '*', s=7)
+array[2,1].scatter(test_x, berr_trigpredictions[1], c='r', marker = 'o', s=7)
+array[2,1].set_xlabel("Test X")
+array[2,1].set_ylabel("True/Predicted Y")
+array[2,1].set_title("BERR, Trignometric, lambda = 0.1, degree = 5")
+
+array[3,0].scatter(test_x, test_y, c='b', marker = '*', s=7)
+array[3,0].scatter(test_x, krrs_trigpredictions[2], c='r', marker = 'o', s=7)
+array[3,0].set_xlabel("Test X")
+array[3,0].set_ylabel("True/Predicted Y")
+array[3,0].set_title("KRRS, Trignometric, lambda = 0.1, degree = 10")
+
+array[3,1].scatter(test_x, test_y, c='b', marker = '*', s=7)
+array[3,1].scatter(test_x, berr_trigpredictions[2], c='r', marker = 'o', s=7)
+array[3,1].set_xlabel("Test X")
+array[3,1].set_ylabel("True/Predicted Y")
+array[3,1].set_title("BERR, Trignometric, lambda = 0.1, degree = 10")
+
+plt.tight_layout()
+
+plt.savefig('../Figures/Plot.png')
+plt.close()
